@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class RearStandProfile:
+  display_name: str = "Rear Stand"
   task_id: str = "Unitree-Go2-Rear-Stand-Flat"
   experiment_name: str = "go2_rear_stand"
   num_envs: int = 4096

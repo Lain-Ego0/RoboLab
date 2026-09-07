@@ -3,7 +3,7 @@
 from mjlab.tasks.registry import list_tasks, load_env_cfg, load_rl_cfg
 
 import lloco.tasks  # noqa: F401
-from lloco.tasks.go2_skills.handstand.mdp.observations import handstand_noise_bounds
+from lloco.tasks.go2_skills.hand_stand.mdp.observations import handstand_noise_bounds
 from lloco.tasks.go2_skills.rear_stand.mdp.observations import rear_stand_noise_bounds
 from lloco.tasks.go2_skills.trot.mdp.observations import single_frame_noise_bounds
 

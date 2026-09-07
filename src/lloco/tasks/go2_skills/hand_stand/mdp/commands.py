@@ -143,6 +143,74 @@ class HandstandVelocityCommand(UniformVelocityCommand):
   def _update_command(self, env_ids: torch.Tensor | None = None) -> None:
     UniformVelocityCommand._update_command(self, env_ids)
 
+  def create_gui(
+    self,
+    name: str,
+    server: viser.ViserServer,
+    get_env_idx: Callable[[], int],
+    on_change: Callable[[], None] | None = None,
+    request_action: Callable[[str, Any], None] | None = None,
+  ) -> None:
+    """Create a Viser joystick while preserving Handstand's zero Y range."""
+    del on_change, request_action
+    from viser import Icon
+
+    axes = (
+      ("lin_vel_x", self.cfg.ranges.lin_vel_x[1]),
+      ("lin_vel_y", self.cfg.ranges.lin_vel_y[1]),
+      ("ang_vel_z", self.cfg.ranges.ang_vel_z[1]),
+    )
+    sliders = []
+
+    with server.gui.add_folder(name.capitalize()):
+      enabled = server.gui.add_checkbox("Enable", initial_value=False)
+      for label, max_val in axes:
+        if max_val == 0.0:
+          sliders.append(
+            server.gui.add_slider(
+              label,
+              min=0.0,
+              max=0.0,
+              step=0.05,
+              initial_value=0.0,
+              disabled=True,
+            )
+          )
+          continue
+
+        max_input = server.gui.add_slider(
+          f"Max {label}",
+          initial_value=max_val,
+          step=0.1,
+          min=0.1,
+          max=10.0,
+        )
+        slider = server.gui.add_slider(
+          label,
+          min=-max_val,
+          max=max_val,
+          step=0.05,
+          initial_value=0.0,
+        )
+
+        @max_input.on_update
+        def _(_ev, _slider=slider, _max_input=max_input) -> None:
+          _slider.min = -_max_input.value
+          _slider.max = _max_input.value
+
+        sliders.append(slider)
+
+      zero_btn = server.gui.add_button("Zero", icon=Icon.SQUARE_X)
+
+      @zero_btn.on_click
+      def _(_) -> None:
+        for slider in sliders:
+          slider.value = 0.0
+
+    self._joystick_enabled = enabled
+    self._joystick_sliders = sliders
+    self._joystick_get_env_idx = get_env_idx
+
 
 @dataclass(kw_only=True)
 class HandstandVelocityCommandCfg(UniformVelocityCommandCfg):

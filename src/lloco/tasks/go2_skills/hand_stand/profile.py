@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class HandstandProfile:
+  display_name: str = "Handstand"
   task_id: str = "Unitree-Go2-Handstand-Flat"
   experiment_name: str = "go2_handstand"
   num_envs: int = 4096
