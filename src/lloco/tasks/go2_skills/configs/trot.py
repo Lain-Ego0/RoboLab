@@ -3,8 +3,8 @@
 from mjlab.tasks.registry import register_mjlab_task
 from mjlab.tasks.velocity.rl import VelocityOnPolicyRunner
 
-from ..common import make_trot_env_cfg, make_trot_runner_cfg
-from ..profiles import TROT
+from ..trot.config import make_trot_env_cfg, make_trot_runner_cfg
+from ..trot.profile import TROT
 
 register_mjlab_task(
   task_id=TROT.task_id,

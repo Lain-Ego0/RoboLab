@@ -3,8 +3,8 @@
 from mjlab.tasks.registry import register_mjlab_task
 from mjlab.tasks.velocity.rl import VelocityOnPolicyRunner
 
-from ..common import make_rear_stand_env_cfg, make_rear_stand_runner_cfg
-from ..profiles import REAR_STAND
+from ..rear_stand.config import make_rear_stand_env_cfg, make_rear_stand_runner_cfg
+from ..rear_stand.profile import REAR_STAND
 
 register_mjlab_task(
   task_id=REAR_STAND.task_id,

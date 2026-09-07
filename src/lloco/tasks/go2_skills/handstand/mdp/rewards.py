@@ -325,16 +325,24 @@ def rear_stand_tracking_ang_vel(env, command_name: str, sigma: float) -> torch.T
   return torch.exp(-error / sigma) * rear_stand_gate(env)
 
 
-def rear_stand_lin_vel_z(env) -> torch.Tensor:
+def stand_lin_vel_z(env) -> torch.Tensor:
   robot: Entity = env.scene["robot"]
   return torch.exp(-10.0 * torch.abs(robot.data.root_link_lin_vel_b[:, 0]))
 
 
-def rear_stand_ang_vel_xy(env) -> torch.Tensor:
+def stand_ang_vel_xy(env) -> torch.Tensor:
   robot: Entity = env.scene["robot"]
   return torch.exp(
     -torch.linalg.vector_norm(torch.abs(robot.data.root_link_ang_vel_b[:, 1:3]), dim=1)
   )
+
+
+# Both stand tasks explicitly select the neutral shared primitives.  Neither
+# task's term is defined in terms of the other task's name.
+rear_stand_lin_vel_z = stand_lin_vel_z
+rear_stand_ang_vel_xy = stand_ang_vel_xy
+handstand_lin_vel_z = stand_lin_vel_z
+handstand_ang_vel_xy = stand_ang_vel_xy
 
 
 def rear_stand_orientation(env) -> torch.Tensor:
@@ -499,9 +507,9 @@ def handstand_from_zero_guidance(
     (target_progress, 0.0, -(1.0 - target_progress)), device=env.device
   )
   target_gravity /= torch.linalg.vector_norm(target_gravity)
-  orientation_error = torch.square(
-    robot.data.projected_gravity_b - target_gravity
-  ).sum(dim=1)
+  orientation_error = torch.square(robot.data.projected_gravity_b - target_gravity).sum(
+    dim=1
+  )
   orientation_reward = torch.exp(-2.0 * orientation_error)
 
   site_ids, names = robot.find_sites(("RL", "RR"), preserve_order=True)
@@ -510,17 +518,15 @@ def handstand_from_zero_guidance(
   height_target = initial_foot_height + target_progress * (
     target_foot_height - initial_foot_height
   )
-  height_error = torch.abs(
-    robot.data.site_pos_w[:, site_ids, 2] - height_target
-  ).sum(dim=1)
+  height_error = torch.abs(robot.data.site_pos_w[:, site_ids, 2] - height_target).sum(
+    dim=1
+  )
   height_reward = torch.exp(-10.0 * height_error)
 
   base_height_target = initial_base_height + target_progress * (
     target_base_height - initial_base_height
   )
-  base_height_error = torch.abs(
-    robot.data.root_link_pos_w[:, 2] - base_height_target
-  )
+  base_height_error = torch.abs(robot.data.root_link_pos_w[:, 2] - base_height_target)
   base_height_reward = torch.exp(-10.0 * base_height_error)
   return strength * (
     2.0 * orientation_reward + 5.0 * height_reward + 5.0 * base_height_reward

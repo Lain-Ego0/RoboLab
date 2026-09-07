@@ -5,7 +5,7 @@ from mjlab.envs import ManagerBasedRlEnv
 from mjlab.tasks.registry import load_env_cfg
 
 import lloco.tasks  # noqa: F401
-from lloco.tasks.go2_skills.mdp.observations import source_vertical_contact
+from lloco.tasks.go2_skills.shared.contacts import source_vertical_contact
 
 
 def test_trot_single_environment_reset_step() -> None:
@@ -147,9 +147,7 @@ def test_handstand_action_reset_delay_and_motor_offset_match_gym() -> None:
     delay._step_count[:] = 1
     action.apply_actions()
     expected = robot.data.default_joint_pos[:, action.target_ids] + 0.02
-    assert torch.allclose(
-      robot.data.joint_pos_target[:, action.target_ids], expected
-    )
+    assert torch.allclose(robot.data.joint_pos_target[:, action.target_ids], expected)
   finally:
     env.close()
 

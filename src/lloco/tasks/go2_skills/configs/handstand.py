@@ -3,8 +3,8 @@
 from mjlab.tasks.registry import register_mjlab_task
 from mjlab.tasks.velocity.rl import VelocityOnPolicyRunner
 
-from ..common import make_handstand_env_cfg, make_handstand_runner_cfg
-from ..profiles import HANDSTAND
+from ..handstand.config import make_handstand_env_cfg, make_handstand_runner_cfg
+from ..handstand.profile import HANDSTAND
 
 register_mjlab_task(
   task_id=HANDSTAND.task_id,

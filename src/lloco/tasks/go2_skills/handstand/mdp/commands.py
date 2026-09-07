@@ -126,8 +126,19 @@ class RearStandVelocityCommandCfg(UniformVelocityCommandCfg):
     return RearStandVelocityCommand(self, env)
 
 
-class HandstandVelocityCommand(RearStandVelocityCommand):
-  """Sampling used by Gym ``go2_leggedstand``, without heading control."""
+class HandstandVelocityCommand(UniformVelocityCommand):
+  """Handstand sampler, intentionally independent of Rear Stand behavior."""
+
+  def _resample_command(self, env_ids: torch.Tensor) -> None:
+    super()._resample_command(env_ids)
+    all_zero = torch.rand(len(env_ids), device=self.device) < 0.20
+    zero_ids = env_ids[all_zero]
+    self.vel_command_b[zero_ids] = 0.0
+    self.heading_target[zero_ids] = 0.0
+    xy_zero = torch.rand(len(env_ids), device=self.device) > 0.90
+    self.vel_command_b[env_ids[xy_zero], :2] = 0.0
+    moving_xy = torch.linalg.vector_norm(self.vel_command_b[env_ids, :2], dim=1) > 0.1
+    self.vel_command_b[env_ids, :2] *= moving_xy.unsqueeze(1)
 
   def _update_command(self, env_ids: torch.Tensor | None = None) -> None:
     UniformVelocityCommand._update_command(self, env_ids)

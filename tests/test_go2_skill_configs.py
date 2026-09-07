@@ -3,11 +3,9 @@
 from mjlab.tasks.registry import list_tasks, load_env_cfg, load_rl_cfg
 
 import lloco.tasks  # noqa: F401
-from lloco.tasks.go2_skills.mdp.observations import (
-  handstand_noise_bounds,
-  rear_stand_noise_bounds,
-  single_frame_noise_bounds,
-)
+from lloco.tasks.go2_skills.handstand.mdp.observations import handstand_noise_bounds
+from lloco.tasks.go2_skills.rear_stand.mdp.observations import rear_stand_noise_bounds
+from lloco.tasks.go2_skills.trot.mdp.observations import single_frame_noise_bounds
 
 
 def test_only_completed_staged_skills_are_registered() -> None:
@@ -273,11 +271,11 @@ def test_rear_stand_rewards_commands_events_and_ppo() -> None:
   assert rl.num_steps_per_env == 24
   assert rl.algorithm.learning_rate == 1.0e-3
   assert rl.algorithm.class_name == (
-    "lloco.tasks.go2_skills.mdp.symmetry:SourceSymmetricPPO"
+    "lloco.tasks.go2_skills.rear_stand.mdp.symmetry:SourceSymmetricPPO"
   )
   assert rl.algorithm.symmetry_cfg == {
     "data_augmentation_func": (
-      "lloco.tasks.go2_skills.mdp.symmetry:rear_stand_symmetry"
+      "lloco.tasks.go2_skills.rear_stand.mdp.symmetry:rear_stand_symmetry"
     ),
     "use_data_augmentation": False,
     "use_mirror_loss": True,
