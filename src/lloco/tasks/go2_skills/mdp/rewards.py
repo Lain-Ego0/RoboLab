@@ -470,6 +470,238 @@ def alive(env) -> torch.Tensor:
   return torch.ones(env.num_envs, device=env.device)
 
 
+def terminal_cost(env) -> torch.Tensor:
+  """Return an episode-level terminal cost under dt-scaled reward managers."""
+  # ``scale_rewards_by_dt`` is enabled for source parity. Dividing here keeps
+  # this cost per termination rather than per simulated second.
+  return env.termination_manager.terminated.float() / env.step_dt
+
+
+def handstand_from_zero_guidance(
+  env,
+  target_steps: int,
+  fade_steps: int,
+  initial_foot_height: float,
+  target_foot_height: float,
+  initial_base_height: float,
+  target_base_height: float,
+) -> torch.Tensor:
+  """Dense moving-target curriculum that vanishes at the final objective."""
+  step = float(env.common_step_counter)
+  target_progress = min(step / target_steps, 1.0)
+  fade_progress = min(max(step - target_steps, 0.0) / fade_steps, 1.0)
+  strength = 1.0 - fade_progress
+
+  robot: Entity = env.scene["robot"]
+  # Move the desired gravity direction along the shortest normalized chord
+  # from ordinary four-foot standing to the source handstand orientation.
+  target_gravity = torch.tensor(
+    (target_progress, 0.0, -(1.0 - target_progress)), device=env.device
+  )
+  target_gravity /= torch.linalg.vector_norm(target_gravity)
+  orientation_error = torch.square(
+    robot.data.projected_gravity_b - target_gravity
+  ).sum(dim=1)
+  orientation_reward = torch.exp(-2.0 * orientation_error)
+
+  site_ids, names = robot.find_sites(("RL", "RR"), preserve_order=True)
+  if tuple(names) != ("RL", "RR"):
+    raise RuntimeError(f"Go2 rear-foot site order mismatch: {names}")
+  height_target = initial_foot_height + target_progress * (
+    target_foot_height - initial_foot_height
+  )
+  height_error = torch.abs(
+    robot.data.site_pos_w[:, site_ids, 2] - height_target
+  ).sum(dim=1)
+  height_reward = torch.exp(-10.0 * height_error)
+
+  base_height_target = initial_base_height + target_progress * (
+    target_base_height - initial_base_height
+  )
+  base_height_error = torch.abs(
+    robot.data.root_link_pos_w[:, 2] - base_height_target
+  )
+  base_height_reward = torch.exp(-10.0 * base_height_error)
+  return strength * (
+    2.0 * orientation_reward + 5.0 * height_reward + 5.0 * base_height_reward
+  )
+
+
+# Gym ``go2_leggedstand``: despite the source name, rear feet are raised and
+# the front feet support the robot, so the migrated task is named Handstand.
+
+
+def handstand_gate(env) -> torch.Tensor:
+  return getattr(env, "_handstand_height_gate", torch.tensor(False, device=env.device))
+
+
+def handstand_tracking_lin_vel(env, command_name: str, sigma: float) -> torch.Tensor:
+  robot: Entity = env.scene["robot"]
+  cmd = command(env, command_name)
+  error = torch.square(cmd[:, 0] - robot.data.root_link_lin_vel_b[:, 2])
+  error += torch.square(cmd[:, 1] - robot.data.root_link_lin_vel_b[:, 1])
+  return torch.exp(-error / sigma) * handstand_gate(env)
+
+
+def handstand_tracking_lin_vel_zero(
+  env, command_name: str, sigma: float
+) -> torch.Tensor:
+  cmd = command(env, command_name)
+  return handstand_tracking_lin_vel(env, command_name, sigma) * (
+    torch.linalg.vector_norm(cmd[:, :2], dim=1) < 0.1
+  )
+
+
+def handstand_tracking_ang_vel(env, command_name: str, sigma: float) -> torch.Tensor:
+  robot: Entity = env.scene["robot"]
+  error = torch.square(
+    command(env, command_name)[:, 2] + robot.data.root_link_ang_vel_b[:, 0]
+  )
+  return torch.exp(-error / sigma) * handstand_gate(env)
+
+
+def handstand_tracking_ang_vel_zero(env, command_name: str) -> torch.Tensor:
+  robot: Entity = env.scene["robot"]
+  cmd = command(env, command_name)
+  error = torch.square(cmd[:, 2] + robot.data.root_link_ang_vel_b[:, 0])
+  return error * handstand_gate(env) * (torch.abs(cmd[:, 2]) < 0.1)
+
+
+def handstand_orientation(env) -> torch.Tensor:
+  robot: Entity = env.scene["robot"]
+  target = torch.tensor((1.0, 0.0, 0.0), device=env.device)
+  return torch.square(robot.data.projected_gravity_b - target).sum(dim=1)
+
+
+def handstand_base_height(env, target_height: float) -> torch.Tensor:
+  robot: Entity = env.scene["robot"]
+  error = torch.abs(robot.data.root_link_pos_w[:, 2] - target_height)
+  # Source stores a batch scalar computed with exponent 10, while returning a
+  # separate exponent-5 reward. Reward ordering makes this gate affect later
+  # terms immediately and tracking terms on the following step.
+  env._handstand_height_gate = torch.exp(-10.0 * error).mean() > 0.78
+  return torch.exp(-5.0 * error)
+
+
+def handstand_rear_feet_air(env, sensor_name: str) -> torch.Tensor:
+  sensor: ContactSensor = env.scene[sensor_name]
+  return (~source_contact(sensor, 1.0)[:, 2:4]).float().prod(dim=1)
+
+
+def handstand_desired_joint_pos(env) -> torch.Tensor:
+  return torch.tensor(
+    (
+      0.0,
+      -0.7,
+      -1.75,
+      0.0,
+      -0.7,
+      -1.75,
+      0.0,
+      0.8,
+      -1.5,
+      0.0,
+      0.8,
+      -1.5,
+    ),
+    device=env.device,
+  )
+
+
+def handstand_default_pos(env) -> torch.Tensor:
+  robot: Entity = env.scene["robot"]
+  error = torch.abs(
+    robot.data.joint_pos[:, joint_ids(robot)] - handstand_desired_joint_pos(env)
+  )
+  return error.sum(dim=1)
+
+
+def handstand_default_pos_reward(env) -> torch.Tensor:
+  robot: Entity = env.scene["robot"]
+  error = torch.abs(
+    robot.data.joint_pos[:, joint_ids(robot)] - handstand_desired_joint_pos(env)
+  )
+  return torch.exp(-error[:, 6:].sum(dim=1)) * handstand_gate(env)
+
+
+def handstand_default_hip_pos(env) -> torch.Tensor:
+  robot: Entity = env.scene["robot"]
+  return torch.abs(robot.data.joint_pos[:, joint_ids(robot)][:, (0, 3, 6, 9)]).sum(
+    dim=1
+  )
+
+
+def handstand_feet_clearance(
+  env, cycle_time: float, target_foot_height: float
+) -> torch.Tensor:
+  robot: Entity = env.scene["robot"]
+  site_ids, names = robot.find_sites(("FL", "FR"), preserve_order=True)
+  if tuple(names) != ("FL", "FR"):
+    raise RuntimeError(f"Go2 front-foot site order mismatch: {names}")
+  height = robot.data.site_pos_w[:, site_ids, 2] - 0.02
+  gait_phase = phase(env, cycle_time)
+  swing = 1.0 - stance_mask(env, cycle_time)
+  target = torch.abs(torch.sin(2.0 * torch.pi * gait_phase)) * target_foot_height
+  reward = torch.exp(-10.0 * torch.abs(height[:, 0] - target)) * swing[:, 0]
+  reward += torch.exp(-10.0 * torch.abs(height[:, 1] - target)) * swing[:, 1]
+  return reward * handstand_gate(env)
+
+
+def handstand_roll(env) -> torch.Tensor:
+  robot: Entity = env.scene["robot"]
+  return torch.abs(root_euler(robot)[:, 0]) * handstand_gate(env)
+
+
+def handstand_front_contact(env, sensor_name: str) -> torch.Tensor:
+  sensor: ContactSensor = env.scene[sensor_name]
+  contact = source_vertical_contact(sensor, 1.0)[:, :2]
+  return (contact.sum(dim=1) == 1) * handstand_gate(env)
+
+
+def handstand_symmetric_joints(env) -> torch.Tensor:
+  robot: Entity = env.scene["robot"]
+  dof = robot.data.joint_pos[:, joint_ids(robot)].clone().view(env.num_envs, 4, 3)
+  dof[:, 1, 0] *= -1.0
+  dof[:, 3, 0] *= -1.0
+  error = torch.abs(dof[:, 2] - dof[:, 3]).sum(dim=1)
+  return error * handstand_gate(env)
+
+
+def handstand_rear_feet_height_exp(env) -> torch.Tensor:
+  robot: Entity = env.scene["robot"]
+  site_ids, names = robot.find_sites(("RL", "RR"), preserve_order=True)
+  if tuple(names) != ("RL", "RR"):
+    raise RuntimeError(f"Go2 rear-foot site order mismatch: {names}")
+  error = torch.abs(robot.data.site_pos_w[:, site_ids, 2] - 0.67).sum(dim=1)
+  return torch.exp(-10.0 * error)
+
+
+class HandstandFeetAirTime:
+  """Source two-front-foot air-time state, threshold and height gate."""
+
+  def __init__(self, cfg: RewardTermCfg, env) -> None:
+    del cfg
+    self._air_time = torch.zeros((env.num_envs, 2), device=env.device)
+    self._last_contact = torch.zeros(
+      (env.num_envs, 2), dtype=torch.bool, device=env.device
+    )
+
+  def __call__(self, env, sensor_name: str) -> torch.Tensor:
+    sensor: ContactSensor = env.scene[sensor_name]
+    contact = source_vertical_contact(sensor, 1.0)[:, :2]
+    contact_filtered = contact | self._last_contact
+    self._last_contact.copy_(contact)
+    first_contact = (self._air_time > 0.0) & contact_filtered
+    self._air_time += env.step_dt
+    reward = ((self._air_time - 0.4) * first_contact).sum(dim=1)
+    self._air_time *= ~contact_filtered
+    return reward * handstand_gate(env)
+
+  def reset(self, env_ids=None) -> None:
+    self._air_time[env_ids] = 0.0
+    self._last_contact[env_ids] = False
+
+
 class FeetAirTime:
   """Source contact-filtered foot air-time state and first-contact reward."""
 

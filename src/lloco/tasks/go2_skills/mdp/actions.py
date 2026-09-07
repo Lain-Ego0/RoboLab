@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 
+import torch
 from mjlab.envs.mdp.actions import JointPositionAction, JointPositionActionCfg
 from mjlab.utils.buffers import DelayBuffer
 
@@ -26,12 +27,28 @@ class EpisodeDelayedJointPositionAction(JointPositionAction):
     target = self._source_delay.compute()
     encoder_bias = self._entity.data.encoder_bias[:, self._target_ids]
     self._entity.set_joint_position_target(
-      target - encoder_bias, joint_ids=self._target_ids
+      target + encoder_bias, joint_ids=self._target_ids
     )
 
   def reset(self, env_ids=None) -> None:
     super().reset(env_ids)
     self._source_delay.reset(batch_ids=env_ids)
+    # Gym keeps ``last_actions`` at zero after a reset.  DelayBuffer normally
+    # backfills a freshly reset row with the first *new* action, which would
+    # bypass the source's 0--3 substep delay on that first policy action.
+    # Seed reset rows with a zero-action frame so their delayed history has the
+    # same previous action as Gym.
+    zeros = torch.zeros_like(self._processed_actions)
+    if not self._source_delay.is_initialized:
+      self._source_delay.append(zeros)
+    else:
+      if env_ids is None:
+        ids = torch.arange(self.num_envs, device=self.device)
+      elif isinstance(env_ids, slice):
+        ids = torch.arange(self.num_envs, device=self.device)[env_ids]
+      else:
+        ids = env_ids
+      self._source_delay.backfill(zeros, ids)
 
 
 @dataclass(kw_only=True)

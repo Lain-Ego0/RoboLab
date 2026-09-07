@@ -8,7 +8,7 @@ tasks; directory names and unregistered configs are not counted as tasks.
 | `go2_trot` | `Unitree-Go2-Trot-Flat` | `Go2_MoB/Go2_Trot/Go2_Trot_Config.py` | `Go2_MoB/Go2_Trot/Go2_Trot.py` | stage-1 runnable; latency/symmetry gaps below |
 | `go2_jump` | `Unitree-Go2-Jump-Flat` | `Go2_MoB/Go2_Jump/Go2_Jump_Config.py` | `Go2_MoB/Go2_Jump/Go2_Jump.py` | stage-1 accepted; corrected-contact 2048 × 1000 training, checkpoint/ONNX validation and Viser inspection passed |
 | `go2_handstand` | `Unitree-Go2-Rear-Stand-Flat` | `Go2_Stand/Go2_Handstand/Go2_Handstand_Config.py` | `Go2_Stand/Go2_Handstand/Go2_Handstand.py` | accepted as Rear Stand; 4096 × 2000 training and Viser validation passed |
-| `go2_leggedstand` | `Unitree-Go2-Legged-Stand-Flat` | `Go2_Stand/Go2_Leggedstand/Go2_Leggedstand_Config.py` | `Go2_Stand/Go2_Leggedstand/Go2_Leggedstand.py` | pending |
+| `go2_leggedstand` | `Unitree-Go2-Handstand-Flat` | `Go2_Stand/Go2_Leggedstand/Go2_Leggedstand_Config.py` | `Go2_Stand/Go2_Leggedstand/Go2_Leggedstand.py` | accepted; 2048 x 800 zero-initialized training and deterministic playback passed |
 | `go2_spring_jump` | `Unitree-Go2-Spring-Jump-Flat` | `Go2_Flip/Go2_Spring_Jump/Go2_Spring_Jump_Config.py` | `Go2_Flip/Go2_Spring_Jump/Go2_Spring_Jump.py` | pending |
 | `go2_backflip` | `Unitree-Go2-Backflip-Flat` | `Go2_Flip/Go2_BackFlip/Go2_BackFlip_Config.py` | `Go2_Flip/Go2_BackFlip/Go2_BackFlip.py` | pending |
 | `go2_dreamwaq` | `Unitree-Go2-DreamWaQ-Rough` | `Go2_DreamWaQ/Go2_DreamWaQ_Config.py` | `Go2_DreamWaQ/Go2_DreamWaQ.py` | pending |
@@ -87,3 +87,59 @@ mass-inertia limitation above. PhysX restitution has no one-to-one MuJoCo
 scalar; its source sample and both critic-label entries are preserved, but
 collision restitution dynamics cannot be claimed exact without a validated
 `solref`/`solimp` mapping.
+
+## Handstand parity table (Gym source: `go2_leggedstand`)
+
+The source raises `RL_foot` and `RR_foot`, keeps `FL_foot` and `FR_foot` as the
+support pair, and targets projected gravity `[1, 0, 0]`. Therefore its migrated
+semantic name is Handstand rather than Legged Stand.
+
+| Concern | Isaac Gym source | mjlab implementation |
+|---|---|---|
+| Actor/critic observation | successful bundled policy/checkpoint uses 48 actor fields: `zeros(2)`, constant-zero `stand_command`, then the later 45-field layout; critic is 3 + 48 + 34 + 4 = 89 | identical 48/89 dimensions, order, scaling, noise and duplicated restitution label; legacy constants retained because they define the trained artifact interface |
+| Action/control | default pose + `0.25 * action` + motor zero offset; 0–3 substep switch delay each policy step, with zero `last_actions` after reset; Kp 40/Kd 1 and 90% effort limits | same target sign and delay schedule; reset rows are seeded with a zero-action delay frame rather than backfilled with their first new action |
+| Command | every 5 s; X/Yaw in [-0.4, 0.4], Y fixed zero; 20% all-zero and independent 10% XY-zero; no heading control | same effective sampler; unused Gym heading range maps to `None` because mjlab rejects a heading range when heading control is disabled |
+| Rewards | 22 nonzero terms in source order; batch-wide height gate uses `mean(exp(-10*error)) > 0.78`, while height reward uses exponent 5 | all 22 source terms retain the same formulas, signs, weights, ordering, stateful two-front-foot air time and dt scaling; the zero-initialized MuJoCo training adaptation below adds three explicit terms |
+| Pose/contact semantics | rear feet target 0.67 m and off-ground; front feet alternate support; projected-gravity target `[1, 0, 0]` | same rear/front selection and target orientation |
+| Reset/termination | q = default × U(0.5, 1.5), all root velocities in [-0.5, 0.5], base contact > 1 N, 20 s | same reset and termination rules |
+| Randomization/push | friction/restitution, masses/COM, gains/encoder, joint friction/damping multipliers and armature; additive velocity push every 8 s | same ranges and labels; dedicated multiplier events and additive push |
+| PPO | seed 1, 24 steps, 15k iterations, LR 1e-3, 512/256/128 ELU, `sym_loss=False` | same supported settings with no symmetry extension |
+
+The checked-in Gym source was later changed to 45/86 and explicitly comments
+that the three constant fields were deleted. Its bundled `policy_1.pt` and
+`model_10600.pt` remain 48/89, proving that the successful training artifact
+predates that edit. The migrated task follows the successful artifact contract.
+
+The source config sets observation and command/action latency flags, but
+`Go2_Leggedstand.py` never reads those fields. Only its independently implemented
+0–3 physics-substep action switch delay is effective and therefore migrated.
+The mass-inertia and restitution backend limitations described above still
+apply.
+
+### Handstand cross-backend validation
+
+The Gym `model_10600.pt` policy was evaluated directly in both backends with
+the recovered 48-field actor contract. It survived 400 policy steps in 128/128
+PhysX environments. In MuJoCo it survived about half of randomized environments,
+71% with startup domain randomization disabled, and 92% from the exact default
+state with startup randomization disabled. This isolates the residual gap to
+the PhysX-to-MuJoCo contact/initial-transient change rather than observation or
+joint ordering.
+
+Training only the source reward from a random actor converged to the source
+task's zero-cost early-termination loophole. The accepted mjlab task therefore
+adds an alive reward, a terminal cost, and a dense moving-target curriculum for
+projected gravity, rear-foot height, and base height. The moving target reaches
+the exact source objective after 400 PPO iterations and its auxiliary reward
+fades completely to zero after 600 iterations.
+
+The acceptance run started from seed-1 random network weights with 2048
+environments and no resume, load-run, or checkpoint option. At iteration 799,
+after 200 iterations with zero curriculum reward, mean episode length was
+985/1000 steps, rear-foot height reward was 3.87, and base-height reward was
+0.84. Deterministic playback confirmed a four-foot start followed by a stable,
+front-foot-supported handstand. The run is stored under
+`logs/rsl_rl/go2_handstand/2026-09-07_10-37-41_zero_init_complete_curriculum_2048x800`.
+
+The Gym checkpoint experiment remains diagnostic evidence for backend parity;
+it is not used to initialize or accept the mjlab policy.

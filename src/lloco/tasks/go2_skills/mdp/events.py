@@ -21,6 +21,25 @@ def overwrite_root_velocity(
   robot.write_root_link_velocity_to_sim(velocity, env_ids=ids)
 
 
+def add_root_velocity(
+  env,
+  env_ids,
+  max_push_vel_xy: float,
+  max_push_ang_vel: float,
+) -> None:
+  """Match ``go2_leggedstand``: add a random world-frame velocity impulse."""
+  ids = resolve_env_ids(env, env_ids)
+  robot: Entity = env.scene["robot"]
+  velocity = robot.data.root_link_vel_w[ids].clone()
+  velocity[:, :2] += torch.empty_like(velocity[:, :2]).uniform_(
+    -max_push_vel_xy, max_push_vel_xy
+  )
+  velocity[:, 3:] += torch.empty_like(velocity[:, 3:]).uniform_(
+    -max_push_ang_vel, max_push_ang_vel
+  )
+  robot.write_root_link_velocity_to_sim(velocity, env_ids=ids)
+
+
 @requires_model_fields("geom_friction")
 def source_friction_buckets(
   env,
@@ -67,11 +86,70 @@ def sample_restitution_label(
   env_ids,
   low: float,
   high: float,
+  attribute_name: str = "_rear_stand_restitution",
 ) -> None:
   """Sample the source restitution label where MuJoCo has no direct coefficient."""
   ids = resolve_env_ids(env, env_ids)
-  labels = getattr(env, "_rear_stand_restitution", None)
+  labels = getattr(env, attribute_name, None)
   if labels is None:
     labels = torch.zeros((env.num_envs, 1), device=env.device)
-    env._rear_stand_restitution = labels
+    setattr(env, attribute_name, labels)
   labels[ids].uniform_(low, high)
+
+
+def _scale_joint_field_and_store_label(
+  env,
+  env_ids,
+  low: float,
+  high: float,
+  field_name: str,
+  attribute_name: str,
+  entity_name: str,
+) -> None:
+  ids = resolve_env_ids(env, env_ids)
+  robot: Entity = env.scene[entity_name]
+  values = torch.empty((len(ids), 1), device=env.device).uniform_(low, high)
+  dof_ids = robot.indexing.joint_v_adr
+  field = getattr(env.sim.model, field_name)
+  field[ids[:, None], dof_ids] *= values
+  labels = torch.zeros((env.num_envs, 1), device=env.device)
+  setattr(env, attribute_name, labels)
+  labels[ids] = values
+
+
+@requires_model_fields("dof_frictionloss")
+def scale_joint_friction_and_store_label(
+  env,
+  env_ids,
+  low: float,
+  high: float,
+  entity_name: str = "robot",
+) -> None:
+  _scale_joint_field_and_store_label(
+    env,
+    env_ids,
+    low,
+    high,
+    "dof_frictionloss",
+    "_handstand_joint_friction",
+    entity_name,
+  )
+
+
+@requires_model_fields("dof_damping")
+def scale_joint_damping_and_store_label(
+  env,
+  env_ids,
+  low: float,
+  high: float,
+  entity_name: str = "robot",
+) -> None:
+  _scale_joint_field_and_store_label(
+    env,
+    env_ids,
+    low,
+    high,
+    "dof_damping",
+    "_handstand_joint_damping",
+    entity_name,
+  )

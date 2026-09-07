@@ -4,6 +4,7 @@ from mjlab.tasks.registry import list_tasks, load_env_cfg, load_rl_cfg
 
 import lloco.tasks  # noqa: F401
 from lloco.tasks.go2_skills.mdp.observations import (
+  handstand_noise_bounds,
   rear_stand_noise_bounds,
   single_frame_noise_bounds,
 )
@@ -14,7 +15,7 @@ def test_only_completed_staged_skills_are_registered() -> None:
   assert "Unitree-Go2-Trot-Flat" in tasks
   assert "Unitree-Go2-Jump-Flat" in tasks
   assert "Unitree-Go2-Rear-Stand-Flat" in tasks
-  assert "Unitree-Go2-Handstand-Flat" not in tasks
+  assert "Unitree-Go2-Handstand-Flat" in tasks
   incomplete = {"Unitree-Go2-Spring-Jump-Flat"}
   assert tasks.isdisjoint(incomplete)
 
@@ -259,9 +260,7 @@ def test_rear_stand_rewards_commands_events_and_ppo() -> None:
   assert cfg.events["joint_friction"].params["ranges"] == (0.01, 0.1)
   assert cfg.events["joint_damping"].params["ranges"] == (0.0, 0.1)
   assert cfg.events["joint_armature"].params["ranges"] == (0.003, 0.08)
-  assert cfg.rewards["collision"].params["sensor_name"] == (
-    "thigh_calf_ground_contact"
-  )
+  assert cfg.rewards["collision"].params["sensor_name"] == ("thigh_calf_ground_contact")
   assert {sensor.name for sensor in cfg.scene.sensors} == {
     "feet_ground_contact",
     "thigh_calf_ground_contact",
@@ -286,3 +285,90 @@ def test_rear_stand_rewards_commands_events_and_ppo() -> None:
   }
   assert rl.actor.hidden_dims == (512, 256, 128)
   assert rl.critic.hidden_dims == (512, 256, 128)
+
+
+def test_handstand_source_parity_configuration() -> None:
+  cfg = load_env_cfg("Unitree-Go2-Handstand-Flat")
+  robot = cfg.scene.entities["robot"]
+  action = cfg.actions["joint_pos"]
+  actor = cfg.observations["actor"].terms["frame"]
+  critic = cfg.observations["critic"].terms["frame"]
+  assert cfg.scene.num_envs == 4096
+  assert cfg.episode_length_s == 20.0
+  assert cfg.sim.mujoco.timestep == 0.005
+  assert cfg.decimation == 4
+  assert robot.init_state.pos == (0.0, 0.0, 0.42)
+  assert robot.init_state.joint_pos["FL_thigh_joint"] == 0.8
+  assert robot.init_state.joint_pos["RL_thigh_joint"] == 1.0
+  assert action.scale == 0.25
+  assert action.delay_min_lag == 0
+  assert action.delay_max_lag == 3
+  assert actor.func.frame_dim == 48
+  assert actor.func.history_length == 1
+  assert critic.func.frame_dim == 89
+  assert critic.func.history_length == 1
+  assert handstand_noise_bounds()[1][:3] == (0.0, 0.0, 0.0)
+  assert handstand_noise_bounds()[1][3:] == rear_stand_noise_bounds()[1]
+
+  expected = {
+    "tracking_lin_vel": 2.5,
+    "tracking_ang_vel": 2.5,
+    "tracking_lin_vel_zero": -0.2,
+    "tracking_ang_vel_zero": -0.2,
+    "lin_vel_z": 0.2,
+    "ang_vel_xy": 0.2,
+    "handstand_orientation": -1.0,
+    "torques": -0.0002,
+    "dof_acc": -2.5e-7,
+    "base_height": 1.0,
+    "handstand_feet_on_air": 0.4,
+    "collision": -1.0,
+    "action_rate": -0.05,
+    "default_pos": -0.05,
+    "default_hip_pos": -0.1,
+    "feet_clearance": 0.4,
+    "ang_xz": -0.5,
+    "contact": 0.3,
+    "feet_air_time": 2.0,
+    "symmetric_joints": -0.1,
+    "handstand_feet_height_exp": 5.0,
+    "default_pos_reward": 0.5,
+    "alive": 1.0,
+    "termination": -5.0,
+    "from_zero_guidance": 1.0,
+  }
+  assert {name: term.weight for name, term in cfg.rewards.items()} == expected
+  assert cfg.rewards["base_height"].params["target_height"] == 0.47
+  assert cfg.rewards["from_zero_guidance"].params == {
+    "target_steps": 9_600,
+    "fade_steps": 4_800,
+    "initial_foot_height": 0.022,
+    "target_foot_height": 0.67,
+    "initial_base_height": 0.30,
+    "target_base_height": 0.47,
+  }
+  command = cfg.commands["twist"]
+  assert command.resampling_time_range == (5.0, 5.0)
+  assert not command.heading_command
+  assert command.rel_heading_envs == 0.0
+  assert command.ranges.lin_vel_x == (-0.4, 0.4)
+  assert command.ranges.lin_vel_y == (-0.0, 0.0)
+  assert command.ranges.ang_vel_z == (-0.4, 0.4)
+  assert cfg.events["push_robot"].params == {
+    "max_push_vel_xy": 1.0,
+    "max_push_ang_vel": 1.0,
+  }
+  assert cfg.events["joint_friction"].params["low"] == 0.01
+  assert cfg.events["joint_friction"].params["high"] == 0.2
+  assert cfg.events["joint_damping"].params["low"] == 0.0
+  assert cfg.events["joint_damping"].params["high"] == 0.2
+  assert cfg.events["joint_armature"].params["ranges"] == (0.005, 0.015)
+  assert cfg.events["restitution_label"].params["attribute_name"] == (
+    "_handstand_restitution"
+  )
+  rl = load_rl_cfg("Unitree-Go2-Handstand-Flat")
+  assert rl.seed == 1
+  assert rl.max_iterations == 15_000
+  assert rl.num_steps_per_env == 24
+  assert rl.algorithm.learning_rate == 1.0e-3
+  assert rl.algorithm.symmetry_cfg is None

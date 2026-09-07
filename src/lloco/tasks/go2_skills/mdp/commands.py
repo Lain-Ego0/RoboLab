@@ -124,3 +124,16 @@ class RearStandVelocityCommand(UniformVelocityCommand):
 class RearStandVelocityCommandCfg(UniformVelocityCommandCfg):
   def build(self, env) -> RearStandVelocityCommand:
     return RearStandVelocityCommand(self, env)
+
+
+class HandstandVelocityCommand(RearStandVelocityCommand):
+  """Sampling used by Gym ``go2_leggedstand``, without heading control."""
+
+  def _update_command(self, env_ids: torch.Tensor | None = None) -> None:
+    UniformVelocityCommand._update_command(self, env_ids)
+
+
+@dataclass(kw_only=True)
+class HandstandVelocityCommandCfg(UniformVelocityCommandCfg):
+  def build(self, env) -> HandstandVelocityCommand:
+    return HandstandVelocityCommand(self, env)

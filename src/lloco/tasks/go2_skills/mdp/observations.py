@@ -288,7 +288,13 @@ def rear_stand_noise_bounds() -> tuple[tuple[float, ...], tuple[float, ...]]:
   return tuple(-value for value in amplitudes), tuple(amplitudes)
 
 
-def rear_stand_actor_frame(env, command_name: str, add_noise: bool) -> torch.Tensor:
+def _stand_actor_frame(
+  env,
+  command_name: str,
+  add_noise: bool,
+  cache_attribute: str,
+  constant_prefix_dim: int = 0,
+) -> torch.Tensor:
   robot: Entity = env.scene["robot"]
   ids = joint_ids(robot)
   command = env.command_manager.get_command(command_name)
@@ -305,16 +311,48 @@ def rear_stand_actor_frame(env, command_name: str, add_noise: bool) -> torch.Ten
     ),
     dim=1,
   )
+  if constant_prefix_dim:
+    frame = torch.cat(
+      (torch.zeros((env.num_envs, constant_prefix_dim), device=env.device), frame),
+      dim=1,
+    )
   if add_noise:
     _, upper = rear_stand_noise_bounds()
-    amplitude = torch.tensor(upper, device=env.device)
+    amplitude = torch.tensor((0.0,) * constant_prefix_dim + upper, device=env.device)
     frame = frame + (2.0 * torch.rand_like(frame) - 1.0) * amplitude
   # The Gym critic concatenates the exact already-corrupted actor frame.
-  env._rear_stand_actor_frame = frame
+  setattr(env, cache_attribute, frame)
   return frame
 
 
-def rear_stand_domain_randomization_info(env) -> torch.Tensor:
+def rear_stand_actor_frame(env, command_name: str, add_noise: bool) -> torch.Tensor:
+  return _stand_actor_frame(env, command_name, add_noise, "_rear_stand_actor_frame")
+
+
+def handstand_actor_frame(env, command_name: str, add_noise: bool) -> torch.Tensor:
+  # The successful bundled Gym policy was trained before these legacy fields
+  # were deleted: zeros(2) + stand_command(1). stand_command was initialized to
+  # zero and never written, so all three inputs are constant zeros.
+  return _stand_actor_frame(
+    env,
+    command_name,
+    add_noise,
+    "_handstand_actor_frame",
+    constant_prefix_dim=3,
+  )
+
+
+def handstand_noise_bounds() -> tuple[tuple[float, ...], tuple[float, ...]]:
+  lower, upper = rear_stand_noise_bounds()
+  return (0.0, 0.0, 0.0) + lower, (0.0, 0.0, 0.0) + upper
+
+
+def rear_stand_domain_randomization_info(
+  env,
+  restitution_attribute: str = "_rear_stand_restitution",
+  joint_friction_attribute: str | None = None,
+  joint_damping_attribute: str | None = None,
+) -> torch.Tensor:
   """The source's 34 privileged domain-randomization labels, in source order."""
   robot: Entity = env.scene["robot"]
   ids = joint_ids(robot)
@@ -354,7 +392,11 @@ def rear_stand_domain_randomization_info(env) -> torch.Tensor:
   armature = robot.data.model.dof_armature[:, dof_ids[0] : dof_ids[0] + 1]
   joint_friction = robot.data.model.dof_frictionloss[:, dof_ids[0] : dof_ids[0] + 1]
   joint_damping = robot.data.model.dof_damping[:, dof_ids[0] : dof_ids[0] + 1]
-  restitution = getattr(env, "_rear_stand_restitution", None)
+  if joint_friction_attribute is not None:
+    joint_friction = getattr(env, joint_friction_attribute, joint_friction)
+  if joint_damping_attribute is not None:
+    joint_damping = getattr(env, joint_damping_attribute, joint_damping)
+  restitution = getattr(env, restitution_attribute, None)
   if restitution is None:
     restitution = torch.zeros((env.num_envs, 1), device=env.device)
 
@@ -407,6 +449,52 @@ class RearStandCriticObservation:
         robot.data.root_link_lin_vel_b * 2.0,
         actor_frame,
         rear_stand_domain_randomization_info(env),
+        source_vertical_contact(sensor, 1.0).float(),
+      ),
+      dim=1,
+    )
+
+  def reset(self, env_ids=None) -> None:
+    del env_ids
+
+
+class HandstandActorObservation:
+  frame_dim = 48
+  history_length = 1
+
+  def __init__(self, cfg: ObservationTermCfg, env) -> None:
+    del cfg, env
+
+  def __call__(self, env, command_name: str, add_noise: bool) -> torch.Tensor:
+    return handstand_actor_frame(env, command_name, add_noise)
+
+  def reset(self, env_ids=None) -> None:
+    del env_ids
+
+
+class HandstandCriticObservation:
+  frame_dim = 89
+  history_length = 1
+
+  def __init__(self, cfg: ObservationTermCfg, env) -> None:
+    del cfg, env
+
+  def __call__(self, env, sensor_name: str) -> torch.Tensor:
+    robot: Entity = env.scene["robot"]
+    actor_frame = getattr(env, "_handstand_actor_frame", None)
+    if actor_frame is None:
+      raise RuntimeError("Handstand actor observation must be computed before critic")
+    sensor: ContactSensor = env.scene[sensor_name]
+    return torch.cat(
+      (
+        robot.data.root_link_lin_vel_b * 2.0,
+        actor_frame,
+        rear_stand_domain_randomization_info(
+          env,
+          "_handstand_restitution",
+          "_handstand_joint_friction",
+          "_handstand_joint_damping",
+        ),
         source_vertical_contact(sensor, 1.0).float(),
       ),
       dim=1,
